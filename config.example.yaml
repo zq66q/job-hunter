@@ -121,6 +121,13 @@ monitor:
   max_consecutive_page_failures: 3
   max_resume_sends_per_cycle: 5
   auto_reply_hr_questions: false
+  # Agent 决策模式：开启后监测循环中的“如何处理HR回复/是否跟进”
+  # 由 LLM 根据对话内容与历史记录决定（Python 仅校验与执行）。
+  # 关闭时使用内置规则判断（默认，行为与旧版一致）。
+  agent_decisions:
+    enabled: false
+    # 决策置信度低于该值时回退规则判断
+    min_confidence: 0.6
 
 follow_up:
   enabled: false

@@ -13,11 +13,22 @@
 | `scoring` | `threshold`, `max_candidates` | 评分阈值与候选数量 |
 | `throttle` | `daily_limit`, `interval_min/max`, `send_windows` | 低频发送策略 |
 | `ai` | `service`, `provider`, `model`, `api_key`, `base_url` | AI 服务与接口 |
-| `monitor` | `interval`, `max_resume_sends_per_cycle` | 回复监听设置 |
+| `monitor` | `interval`, `max_resume_sends_per_cycle`, `agent_decisions` | 回复监听设置 |
 | `follow_up` | `enabled`, `interval_hours`, `skip_weekends` | 跟进策略 |
 | `browser` | `chrome_ports`, `proxy_port` | Chrome 与本地代理连接 |
 
 完整字段、默认值和注释以 [`config.example.yaml`](../config.example.yaml) 为准。
+
+## Agent 决策模式（实验性）
+
+在 `config.yaml` 中开启 `monitor.agent_decisions.enabled: true` 后，监测循环由 **LLM 决策驱动**：
+
+- 每个有新回复的对话，会把岗位信息、最近对话内容、交互历史交给 LLM，由它决定下一步动作（自动回复 / 走简历流程 / 标记拒绝 / 跳过）；
+- 无回复的过期岗位，也由 LLM 判断是否值得跟进；
+- 每次决策（动作、理由、置信度）都会写入历史记录，供后续决策参考；
+- `min_confidence`（默认 0.6）以下的低置信度决策、无法解析的输出，以及所有幂等/安全检查（已回复跳过、重复消息去重、规则检测到拒绝的强制兜底）仍由代码保证。
+
+关闭该开关（默认）时，行为与旧版规则判断完全一致。
 
 ## 平台配置边界
 

@@ -17,6 +17,13 @@ from jobagent.db import (
     get_db, get_jobs_by_status,
     update_job_status, add_history, add_risk_event, set_platform_safety_lock,
 )
+from jobagent.executor.decider import (
+    DecisionResult,
+    agent_decisions_enabled,
+    decide_conversation_action,
+    decide_follow_up,
+    record_decision,
+)
 from jobagent.throttle import RequestThrottle, SendWindowChecker
 from jobagent.platform_safety import (
     PlatformAccessGuard,
@@ -1294,9 +1301,15 @@ def _match_conversation_to_job(conv: dict, jobs: list[dict]) -> dict | None:
 def _handle_conversation(job: dict, config: dict, conversation: dict | None = None) -> str:
     """Handle a single conversation that has an HR reply.
 
+    When monitor.agent_decisions.enabled is true, an LLM decision layer
+    chooses the action (auto_reply / needs_resume / mark_rejected / skip)
+    based on the conversation and history; otherwise the legacy rule
+    cascade decides. Idempotency checks and rejection safety overrides
+    always run in Python.
+
     Returns action taken: 'stopped', 'skipped_user_replied',
-    'skipped_existing_resume', 'rejected', 'needs_resume', 'auto_replied',
-    or 'failed'.
+    'skipped_existing_resume', 'skipped_agent_decision', 'rejected',
+    'needs_resume', 'auto_replied', or 'failed'.
     """
     if stop_requested(config):
         return "stopped"
@@ -1365,8 +1378,36 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
         close_tab(target_id)
         return "skipped_handled_reply"
 
-    # Check if HR is rejecting
-    if _detect_rejection(messages):
+    # Decide the action for this conversation:
+    # - Agent mode (monitor.agent_decisions.enabled): the LLM chooses the
+    #   action from the conversation context and interaction history.
+    # - Legacy mode: hardcoded rule cascade.
+    # Safety override: legacy rejection detection always wins, so the agent
+    # never keeps messaging a conversation the rules consider rejected.
+    decision_action: str | None = None
+    if agent_decisions_enabled(config):
+        decision = decide_conversation_action(job, messages, config)
+        if decision:
+            if _detect_rejection(messages) and decision.action != "mark_rejected":
+                console.print("[yellow]    安全兜底：规则检测到拒绝，覆盖Agent决策[/yellow]")
+                decision = DecisionResult("mark_rejected", "规则检测到拒绝（安全兜底）", 1.0)
+            console.print(
+                f"[magenta]    Agent决策: {decision.action}"
+                f"（置信度{decision.confidence:.2f}）— {decision.reason}[/magenta]"
+            )
+            record_decision(job["id"], decision)
+            decision_action = decision.action
+        else:
+            console.print("[yellow]    Agent决策不可用，回退规则判断[/yellow]")
+    if decision_action is None:
+        if _detect_rejection(messages):
+            decision_action = "mark_rejected"
+        elif _detect_resume_request(messages):
+            decision_action = "needs_resume"
+        else:
+            decision_action = "auto_reply"
+
+    if decision_action == "mark_rejected":
         if stop_requested(config):
             close_tab(target_id)
             return "stopped"
@@ -1378,101 +1419,15 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
         close_tab(target_id)
         return "rejected"
 
-    # Check if HR is asking for resume
-    resume_request_from_card = _has_resume_request_card(messages)
-    if _detect_resume_request(messages):
-        console.print("[cyan]    HR要求简历，生成定制化简历...[/cyan]")
-
-        db = get_db()
-        already_generated_resume = _has_generated_resume_for_job(db, job["id"])
-        db.close()
-        if already_generated_resume:
-            console.print("[dim]    定制简历已生成过，跳过重复生成和重复记录[/dim]")
-            close_tab(target_id)
-            return "skipped_existing_resume"
-
-        # Generate tailored resume, then hand off to user for manual sending
-        from jobagent.ai.resume import generate_tailored_resume, get_last_resume_failure_reason
-
-        resume_failure_reason = ""
-        try:
-            resume_path = generate_tailored_resume(job["id"], config)
-            if not resume_path:
-                resume_failure_reason = get_last_resume_failure_reason(job["id"])
-        except OperationCancelled:
-            close_tab(target_id)
-            return "stopped"
-        except Exception as exc:
-            resume_path = None
-            resume_failure_reason = f"生成过程发生异常：{exc}"
-            console.print(f"[red]    定制简历生成异常：{exc}[/red]")
-        if stop_requested(config):
-            close_tab(target_id)
-            return "stopped"
-        if resume_path:
-            console.print(f"[bold green]    ✓ 定制简历已生成: {resume_path}[/bold green]")
-            console.print(f"[bold yellow]    ⚠ 请手动发送上述简历给 {job['company']} HR[/bold yellow]")
-        else:
-            console.print("[yellow]    ! 定制简历生成失败，请手动处理[/yellow]")
-
-        # Auto-send portfolio link for normal text resume requests only.
-        # Card-triggered requests are recognition-only: generate and mark needs_resume.
-        if not resume_request_from_card:
-            portfolio_url = config.get("profile", {}).get("portfolio_url", "")
-            if not _check_if_portfolio_sent(messages, portfolio_url):
-                if _wait_or_stop(config, 2):
-                    close_tab(target_id)
-                    return "stopped"
-                link_msg = f"这是我的在线简历，方便您查看：{portfolio_url}"
-                if stop_requested(config):
-                    close_tab(target_id)
-                    return "stopped"
-                if _send_message_in_chat(target_id, link_msg):
-                    console.print("[green]    ✓ 在线简历链接已发送[/green]")
-                else:
-                    console.print("[yellow]    ! 在线简历链接发送失败[/yellow]")
-            else:
-                console.print("[dim]    在线简历链接已发过，跳过[/dim]")
-
-        if not resume_path:
-            if stop_requested(config):
-                close_tab(target_id)
-                return "stopped"
-            history_detail = _build_resume_failure_detail(
-                messages,
-                resume_failure_reason or "定制简历生成失败，未获得更具体的错误信息",
-            )
-            db = get_db()
-            add_history(db, job["id"], "resume_failed", history_detail)
-            db.close()
-            close_tab(target_id)
-            return "failed"
-
-        # Update status to needs_resume so user knows to send the PDF
-        if resume_request_from_card:
-            history_detail = _build_reply_detail(
-                messages,
-                f"附件简历卡片请求已识别，未自动发送在线简历，定制PDF待手动发送: {resume_path}",
-                "needs_resume.v1",
-            )
-        else:
-            history_detail = _build_reply_detail(
-                messages,
-                f"在线简历已发送，定制PDF待手动发送: {resume_path}",
-                "needs_resume.v1",
-            )
-
-        if stop_requested(config):
-            close_tab(target_id)
-            return "stopped"
-        db = get_db()
-        update_job_status(db, job["id"], "needs_resume")
-        add_history(db, job["id"], "needs_resume", history_detail)
-        db.close()
-
+    if decision_action == "skip":
+        console.print("[dim]    Agent决定本轮跳过[/dim]")
         close_tab(target_id)
-        return "needs_resume"
+        return "skipped_agent_decision"
 
+    if decision_action == "needs_resume":
+        return _handle_resume_request(job, target_id, messages, config)
+
+    # auto_reply path: respect previously dismissed reply suggestions.
     db = get_db()
     dismissed_pending_reply = _has_dismissed_pending_reply(db, job["id"], messages)
     db.close()
@@ -1481,7 +1436,119 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
         close_tab(target_id)
         return "skipped_dismissed_reply"
 
-    # HR replied but not asking for resume — generate a natural reply
+    return _handle_auto_reply(job, target_id, messages, conversation, config)
+
+
+def _handle_resume_request(job: dict, target_id: str, messages: list[dict], config: dict) -> str:
+    """Generate a tailored resume (and send portfolio link when appropriate).
+
+    Extracted from _handle_conversation; returns the same action strings.
+    """
+    resume_request_from_card = _has_resume_request_card(messages)
+    console.print("[cyan]    HR要求简历，生成定制化简历...[/cyan]")
+
+    db = get_db()
+    already_generated_resume = _has_generated_resume_for_job(db, job["id"])
+    db.close()
+    if already_generated_resume:
+        console.print("[dim]    定制简历已生成过，跳过重复生成和重复记录[/dim]")
+        close_tab(target_id)
+        return "skipped_existing_resume"
+
+    # Generate tailored resume, then hand off to user for manual sending
+    from jobagent.ai.resume import generate_tailored_resume, get_last_resume_failure_reason
+
+    resume_failure_reason = ""
+    try:
+        resume_path = generate_tailored_resume(job["id"], config)
+        if not resume_path:
+            resume_failure_reason = get_last_resume_failure_reason(job["id"])
+    except OperationCancelled:
+        close_tab(target_id)
+        return "stopped"
+    except Exception as exc:
+        resume_path = None
+        resume_failure_reason = f"生成过程发生异常：{exc}"
+        console.print(f"[red]    定制简历生成异常：{exc}[/red]")
+    if stop_requested(config):
+        close_tab(target_id)
+        return "stopped"
+    if resume_path:
+        console.print(f"[bold green]    ✓ 定制简历已生成: {resume_path}[/bold green]")
+        console.print(f"[bold yellow]    ⚠ 请手动发送上述简历给 {job['company']} HR[/bold yellow]")
+    else:
+        console.print("[yellow]    ! 定制简历生成失败，请手动处理[/yellow]")
+
+    # Auto-send portfolio link for normal text resume requests only.
+    # Card-triggered requests are recognition-only: generate and mark needs_resume.
+    if not resume_request_from_card:
+        portfolio_url = config.get("profile", {}).get("portfolio_url", "")
+        if not _check_if_portfolio_sent(messages, portfolio_url):
+            if _wait_or_stop(config, 2):
+                close_tab(target_id)
+                return "stopped"
+            link_msg = f"这是我的在线简历，方便您查看：{portfolio_url}"
+            if stop_requested(config):
+                close_tab(target_id)
+                return "stopped"
+            if _send_message_in_chat(target_id, link_msg):
+                console.print("[green]    ✓ 在线简历链接已发送[/green]")
+            else:
+                console.print("[yellow]    ! 在线简历链接发送失败[/yellow]")
+        else:
+            console.print("[dim]    在线简历链接已发过，跳过[/dim]")
+
+    if not resume_path:
+        if stop_requested(config):
+            close_tab(target_id)
+            return "stopped"
+        history_detail = _build_resume_failure_detail(
+            messages,
+            resume_failure_reason or "定制简历生成失败，未获得更具体的错误信息",
+        )
+        db = get_db()
+        add_history(db, job["id"], "resume_failed", history_detail)
+        db.close()
+        close_tab(target_id)
+        return "failed"
+
+    # Update status to needs_resume so user knows to send the PDF
+    if resume_request_from_card:
+        history_detail = _build_reply_detail(
+            messages,
+            f"附件简历卡片请求已识别，未自动发送在线简历，定制PDF待手动发送: {resume_path}",
+            "needs_resume.v1",
+        )
+    else:
+        history_detail = _build_reply_detail(
+            messages,
+            f"在线简历已发送，定制PDF待手动发送: {resume_path}",
+            "needs_resume.v1",
+        )
+
+    if stop_requested(config):
+        close_tab(target_id)
+        return "stopped"
+    db = get_db()
+    update_job_status(db, job["id"], "needs_resume")
+    add_history(db, job["id"], "needs_resume", history_detail)
+    db.close()
+
+    close_tab(target_id)
+    return "needs_resume"
+
+
+def _handle_auto_reply(
+    job: dict,
+    target_id: str,
+    messages: list[dict],
+    conversation: dict | None,
+    config: dict,
+) -> str:
+    """Generate and (when enabled) send a natural reply.
+
+    Extracted from _handle_conversation; returns the same action strings.
+    """
     console.print("[cyan]    生成自动回复...[/cyan]")
     try:
         reply = _generate_auto_reply(messages, job, config)
@@ -1751,6 +1818,20 @@ def _check_follow_ups(config: dict, throttle, replied_job_ids: set | None = None
             console.print(f"[dim]  跟进跳过（已记录过跟进）: {job['company']}[/dim]")
             continue
 
+        # Agent mode gate: let the LLM judge whether this stale job is
+        # worth following up. Falls back to "always follow up" when the
+        # decision is unavailable or disabled.
+        if agent_decisions_enabled(config):
+            decision = decide_follow_up(job, config)
+            if decision:
+                console.print(
+                    f"[magenta]  Agent决策: {decision.action}"
+                    f"（置信度{decision.confidence:.2f}）— {decision.reason}[/magenta]"
+                )
+                record_decision(job["id"], decision)
+                if decision.action != "follow_up":
+                    continue
+
         try:
             follow_up_msg = _generate_follow_up(job, config)
         except OperationCancelled:
@@ -1882,6 +1963,7 @@ def monitor_and_send_resumes(config: dict) -> dict:
                 "skipped_existing_pending",
                 "skipped_handled_reply",
                 "skipped_dismissed_reply",
+                "skipped_agent_decision",
             ):
                 summary["skipped"] += 1
             elif action == "auto_replied":
