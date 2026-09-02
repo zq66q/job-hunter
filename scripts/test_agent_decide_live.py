@@ -25,12 +25,17 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 
 from jobagent.config import load_config
-from jobagent.executor.decider import decide_conversation_action, agent_decisions_enabled
+from jobagent.executor.decider import (
+    decide_conversation_action,
+    agent_decisions_enabled,
+    function_calling_enabled,
+)
 
 # ---------- 1. 加载配置（脚本临时强制开启决策，不改你的 config.yaml）----------
 cfg = load_config(Path(r"D:\job-agent\config.yaml"))
 cfg.setdefault("monitor", {}).setdefault("agent_decisions", {})["enabled"] = True
 print(f"[配置] 决策开关(临时) = {agent_decisions_enabled(cfg)}  -> 已强制开启，config.yaml 未改动")
+print(f"[配置] Function Calling = {function_calling_enabled(cfg)}  -> True=LLM直接选工具带参数 / False=旧JSON路径")
 
 # ---------- 2. 假岗位信息（决策 prompt 会用到，字段越全判断越准）----------
 JOB = {
@@ -74,6 +79,8 @@ for name, hr_text, expected, note in SCENARIOS:
     else:
         tag = "DIFF"
     print(f">>> action={result.action}  confidence={result.confidence:.2f}  [{tag}]")
+    if result.params:
+        print(f"    工具参数: {result.params}")
     print(f"    理由: {result.reason}")
     if result.action != expected and note:
         print(f"    注: {note}（DIFF 不一定是错，理由说得通即可）")
