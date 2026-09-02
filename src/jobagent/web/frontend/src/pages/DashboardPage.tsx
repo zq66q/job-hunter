@@ -32,7 +32,7 @@ import {
   XCircle,
 } from 'lucide-react'
 
-type WorkbenchMode = 'full' | 'collect' | 'rescore' | 'monitor'
+type WorkbenchMode = 'full' | 'collect' | 'rescore' | 'monitor' | 'monitor_once'
 type DashboardView = 'workbench' | 'jobs' | 'monitor'
 type StatsScope = 'today' | 'total'
 
@@ -158,8 +158,13 @@ const modes: Array<{ mode: WorkbenchMode; title: string; description: string }> 
   },
   {
     mode: 'monitor',
-    title: '单独监测',
-    description: '只监测过往已投递项目；发现 HR 要简历或问题后进入对应处理。',
+    title: '持续监测',
+    description: '后台持续监听 HR 回复，按配置间隔自动循环检测，适合全天挂机。',
+  },
+  {
+    mode: 'monitor_once',
+    title: '立即检测',
+    description: '立即扫描一次 HR 回复并生成待确认建议，完成后自动停止，不占用后台。',
   },
 ]
 
@@ -630,7 +635,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         </div>
 
 
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
           {modes.map(item => {
             const isActive = activeTask?.mode === item.mode
             const disabled = Boolean(activeTask && !isActive)

@@ -21,13 +21,14 @@ from jobagent.browser.diagnostics import run_browser_diagnostics
 from jobagent.collection.orchestrator import normalize_collection_options
 
 
-VALID_MODES = {"full", "collect", "rescore", "monitor"}
+VALID_MODES = {"full", "collect", "rescore", "monitor", "monitor_once"}
 
 
 def collect_preflight_checks(mode: str, config: dict, options: dict | None = None) -> list[dict[str, str]]:
 	"""Collect configuration, AI connectivity, and browser readiness checks."""
+	effective_mode = "monitor" if mode == "monitor_once" else mode
 	collection_options = None
-	if mode == "collect":
+	if effective_mode == "collect":
 		try:
 			collection_options = normalize_collection_options(config, options)
 		except ValueError as exc:
@@ -36,11 +37,11 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 		else:
 			checks = _configuration_checks(mode, config, collection_options)
 	else:
-		checks = _configuration_checks(mode, config, options)
+		checks = _configuration_checks(effective_mode, config, options)
 	if mode not in VALID_MODES:
 		return checks
-	ai_required = mode in {"full", "rescore"} or (
-		mode == "collect" and bool(collection_options and collection_options.get("auto_score"))
+	ai_required = effective_mode in {"full", "rescore"} or (
+		effective_mode == "collect" and bool(collection_options and collection_options.get("auto_score"))
 	)
 
 	if not ai_required:
@@ -74,7 +75,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 				checks.extend(future.result())
 			except Exception:
 				checks.append(fallback)
-	if mode == "full":
+	if effective_mode == "full":
 		try:
 			full_options = normalize_collection_options(config, options)
 		except ValueError as exc:

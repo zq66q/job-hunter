@@ -572,6 +572,59 @@ def _execute_monitor(task: WorkbenchTask, config: dict, *, initial_cooldown: boo
 		task.context.pop("monitor_queue_lock", None)
 
 
+def _execute_monitor_once(task: WorkbenchTask, config: dict) -> None:
+	"""Run a single monitor cycle and stop automatically."""
+	from jobagent.executor.monitor import monitor_and_send_resumes
+
+	if _stop_for_active_platform_lock(task):
+		return
+
+	monitor_config = dict(config)
+	monitor_config["_workbench_stop_event"] = task.stop_requested
+	monitor_config["_monitor_reuse_chat_tab"] = True
+	monitor_config["_monitor_runtime_state"] = {}
+
+	_log(task, "执行单次监测")
+	try:
+		summary = monitor_and_send_resumes(monitor_config)
+	except Exception as exc:
+		_log(task, f"单次监测出错：{exc}")
+		raise
+	finally:
+		from jobagent.executor.monitor import close_monitor_chat_target
+		close_monitor_chat_target(monitor_config)
+
+	if task.stop_requested.is_set():
+		return
+
+	stop_reason = summary.get("stop_reason")
+	if stop_reason:
+		reason_labels = {
+			"captcha": "验证码",
+			"rate_limit": "频率限制",
+			"blocked": "账号或请求被拦截",
+			"consecutive_page_failures": "连续页面失败",
+			"daily_platform_page_limit": "单日平台页面访问上限",
+			"persistent_risk_lock": "平台安全锁冷却",
+		}
+		reason = f"监测已安全停止：检测到{reason_labels.get(stop_reason, '风险信号')}"
+		task.stop_reason = reason
+		_log(task, reason)
+		return
+
+	parts = [
+		f"自动回复{summary.get('replied', 0)}条",
+		f"跳过{summary.get('skipped', 0)}条",
+	]
+	if summary.get("needs_resume"):
+		parts.append(f"待手动发简历{summary['needs_resume']}份")
+	if summary.get("follow_up"):
+		parts.append(f"跟进{summary.get('follow_up')}条")
+	if summary.get("rejected"):
+		parts.append(f"拒绝{summary['rejected']}条")
+	_log(task, f"本次: {', '.join(parts)}")
+
+
 def _execute_full(task: WorkbenchTask, config: dict) -> None:
 	db = _get_web_db()
 	try:
@@ -863,6 +916,7 @@ task_runner._executors.update({
 	"rescore": _execute_rescore,
 	"score": _execute_score,
 	"monitor": _execute_monitor,
+	"monitor_once": _execute_monitor_once,
 	"deliver": _execute_deliver,
 })
 
