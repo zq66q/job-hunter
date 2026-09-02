@@ -7,18 +7,39 @@ param(
 $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
-if ($PythonPath) {
-	if (-not (Test-Path -LiteralPath $PythonPath)) {
-		throw "Configured Python was not found: $PythonPath"
+# Resolution order (highest priority first):
+#   1. Explicit -PythonPath override
+#   2. The job-agent project's local virtualenv (./.venv / .\.venv)
+#   3. jobagent on PATH (may be missing when launched from a desktop icon)
+#   4. System 'py' / 'python' (last-resort fallback; may not have jobagent installed)
+$VenvScripts = $null
+$VenvCandidate = Join-Path $RepoRoot ".venv\Scripts"
+if (Test-Path -LiteralPath $VenvCandidate) {
+	$VenvScripts = (Resolve-Path -LiteralPath $VenvCandidate).Path
+}
+
+function Resolve-JobagentCommand {
+	param([string]$VenvScriptsDir, [string]$Override)
+	if ($Override) {
+		if (-not (Test-Path -LiteralPath $Override)) {
+			throw "Configured Python was not found: $Override"
+		}
+		return [pscustomobject]@{ Source = (Resolve-Path -LiteralPath $Override).Path; Prefix = @("-m", "jobagent.main") }
 	}
-	$Runner = (Resolve-Path -LiteralPath $PythonPath).Path
-	$RunnerPrefix = @("-m", "jobagent.main")
-} else {
+	if ($VenvScriptsDir) {
+		$VenvExe = Join-Path $VenvScriptsDir "python.exe"
+		$VenvScript = Join-Path $VenvScriptsDir "jobagent.exe"
+		if (Test-Path -LiteralPath $VenvScript) {
+			return [pscustomobject]@{ Source = $VenvScript; Prefix = @() }
+		}
+		if (Test-Path -LiteralPath $VenvExe) {
+			return [pscustomobject]@{ Source = $VenvExe; Prefix = @("-m", "jobagent.main") }
+		}
+	}
 	$Jobagent = Get-Command "jobagent" -ErrorAction SilentlyContinue
 	if ($Jobagent) {
-		$Runner = $Jobagent.Source
-		$RunnerPrefix = @()
-	} else {
+		return [pscustomobject]@{ Source = $Jobagent.Source; Prefix = @() }
+	}
 	$Python = Get-Command "py" -ErrorAction SilentlyContinue
 	if (-not $Python) {
 		$Python = Get-Command "python" -ErrorAction SilentlyContinue
@@ -26,10 +47,12 @@ if ($PythonPath) {
 	if (-not $Python) {
 		throw "Could not find job-agent or Python. Install the project first with: pip install -e ."
 	}
-	$Runner = $Python.Source
-	$RunnerPrefix = @("-m", "jobagent.main")
-	}
+	return [pscustomobject]@{ Source = $Python.Source; Prefix = @("-m", "jobagent.main") }
 }
+
+$Resolved = Resolve-JobagentCommand -VenvScriptsDir $VenvScripts -Override $PythonPath
+$Runner = $Resolved.Source
+$RunnerPrefix = $Resolved.Prefix
 
 $ChromeCandidates = @()
 if ($env:ProgramFiles) {

@@ -1178,6 +1178,13 @@ function JobsPoolView() {
 
   const deliverSelectedJobs = async () => {
     if (!selectedIds.length) return
+    const selectedJobs = items.filter(job => selectedIds.includes(job.id))
+    const notReady = selectedJobs.filter(job => !['ready', 'approved'].includes(job.status))
+    if (notReady.length > 0) {
+      const statusLabels = Array.from(new Set(notReady.map(job => getStatusLabel(job.status))))
+      setNotice(`所选岗位包含 ${notReady.length} 条“${statusLabels.join('、')}”状态，暂不支持一键投递。请先点击【一键 AI 评分】，状态变为“待确认”后再投递。`)
+      return
+    }
     const count = selectedIds.length
     if (!window.confirm(`确认投递已选择的 ${count} 个岗位吗？仅 BOSS 岗位可进入发送队列，且仍受发送时间窗口和每日额度限制。`)) return
     try {
