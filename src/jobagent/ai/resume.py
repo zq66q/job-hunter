@@ -133,13 +133,16 @@ PLACEHOLDER_PATTERNS = [
 ]
 
 FACT_TOKEN_PATTERNS = [
-    re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])"),
+    # Use ASCII-only character classes: Python's default \w matches Unicode
+    # letters/digits (e.g. Chinese characters), which breaks boundary checks
+    # when an email is immediately followed by CJK text like "3611414264@qq.com住".
+    re.compile(r"(?<![A-Za-z0-9_.+-])[A-Za-z0-9_.+-]+@[A-Za-z0-9_.-]+\.[A-Za-z]{2,}(?![A-Za-z0-9_.-])"),
     re.compile(r"https?://[^\s)>）】]+", re.I),
     re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)"),
     re.compile(r"(?<!\d)(?:19|20)\d{2}(?:[./年-](?:0?[1-9]|1[0-2]))?(?:[./月-](?:0?[1-9]|[12]\d|3[01]))?(?:日)?(?!\d)"),
     re.compile(
-        r"(?<![\w.])\d+(?:\.\d+)?(?:\s*[-~至到]\s*\d+(?:\.\d+)?)?\s*"
-        r"(?:%|％|年|个月|月|天|人|次|篇|万|亿|元|K|k|W|w|倍|\+)(?!\w)"
+        r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?:\s*[-~至到]\s*\d+(?:\.\d+)?)?\s*"
+        r"(?:%|％|年|个月|月|天|人|次|篇|万|亿|元|K|k|W|w|倍|\+)(?![A-Za-z0-9_])"
     ),
 ]
 

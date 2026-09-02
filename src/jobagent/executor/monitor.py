@@ -98,7 +98,8 @@ JS_EXTRACT_CHAT_LIST = r"""
             || statusClass.includes('status-delivery')
             || /(myself|self|mine|outgoing|send)/.test(lastMsgClass);
         const isHrMessage = /(friend|other|incoming|receive)/.test(lastMsgClass);
-        const isSystemMessage = /正在与Boss.+沟通|近30天过滤了.+BOSS发来的消息|你与该职位竞争者PK情况|新岗位速递|VIP数据总结|根据你的历史开聊\/收藏岗位|根据你的开聊\/收藏岗位.+为你推荐\d+个新岗位|识别到以下新发布岗位你可能感兴趣|我是你的求职助手|感谢您使用VIP权益|(?:您的|VIP)权益已到期|点击续费vip|牛人vip怎么样|附件简历请求已发送|附件简历已发送给对方|附件简历.{0,80}已发送给Boss/i.test(lastMessage);
+        const isPlaceholder = /正在与Boss.+沟通/.test(lastMessage);
+        const isSystemMessage = !isPlaceholder && /近30天过滤了.+BOSS发来的消息|你与该职位竞争者PK情况|新岗位速递|VIP数据总结|根据你的历史开聊\/收藏岗位|根据你的开聊\/收藏岗位.+为你推荐\d+个新岗位|识别到以下新发布岗位你可能感兴趣|我是你的求职助手|感谢您使用VIP权益|(?:您的|VIP)权益已到期|点击续费vip|牛人vip怎么样|附件简历请求已发送|附件简历已发送给对方|附件简历.{0,80}已发送给Boss/i.test(lastMessage);
         const lastDirection = isOurMessage ? 'me' : (isHrMessage ? 'hr' : 'unknown');
         const hasReply = !!lastMsgEl && lastDirection !== 'me' && !isSystemMessage;
 
