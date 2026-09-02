@@ -111,6 +111,7 @@ interface HistoryDetailPayload {
   pending_history_id?: number
   manual_reply?: string
   system_reason?: string
+  resume_path?: string
   conversation_tail?: Array<{
     sender: string
     text: string

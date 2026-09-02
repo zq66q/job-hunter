@@ -6,6 +6,7 @@ export interface ParsedHistoryDetail {
   aiReply: string
   systemReason: string
   pendingHistoryId: number | null
+  resumePath: string | null
   conversationTail: Array<{ sender: string; text: string; time?: string; kind?: string }>
 }
 
@@ -18,6 +19,7 @@ export function parseHistoryDetail(item: HistoryItem): ParsedHistoryDetail {
       aiReply: item.action === 'resume_failed' ? '' : payloadReply,
       systemReason: item.detail_payload.system_reason || (item.action === 'resume_failed' ? payloadReply : ''),
       pendingHistoryId: typeof item.detail_payload.pending_history_id === 'number' ? item.detail_payload.pending_history_id : null,
+      resumePath: item.detail_payload.resume_path || null,
       conversationTail: item.detail_payload.conversation_tail || [],
     }
   }
@@ -29,6 +31,7 @@ export function parseHistoryDetail(item: HistoryItem): ParsedHistoryDetail {
       aiReply: '',
       systemReason: '',
       pendingHistoryId: null,
+      resumePath: null,
       conversationTail: [],
     }
   }
@@ -43,6 +46,7 @@ export function parseHistoryDetail(item: HistoryItem): ParsedHistoryDetail {
         aiReply: item.action === 'resume_failed' ? '' : payloadReply,
         systemReason: parsed.system_reason || (item.action === 'resume_failed' ? payloadReply : ''),
         pendingHistoryId: typeof parsed.pending_history_id === 'number' ? parsed.pending_history_id : null,
+        resumePath: parsed.resume_path || null,
         conversationTail: Array.isArray(parsed.conversation_tail) ? parsed.conversation_tail : [],
       }
     }
@@ -56,6 +60,7 @@ export function parseHistoryDetail(item: HistoryItem): ParsedHistoryDetail {
     aiReply: item.action === 'resume_failed' ? '' : item.detail,
     systemReason: item.action === 'resume_failed' ? item.detail : '',
     pendingHistoryId: null,
+    resumePath: null,
     conversationTail: [],
   }
 }

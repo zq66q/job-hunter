@@ -648,6 +648,7 @@ def _build_reply_detail(
     ai_reply: str,
     schema: str = "reply_pending.v1",
     conversation: dict | None = None,
+    resume_path: str | None = None,
 ) -> str:
     """Build structured history detail containing the HR question and AI reply."""
     hr_messages = _get_hr_messages_after_last_reply(messages)
@@ -661,6 +662,7 @@ def _build_reply_detail(
             str((conversation or {}).get("last_message", ""))
         ),
         "ai_reply": _truncate_text(ai_reply or "", 1000),
+        "resume_path": str(resume_path) if resume_path else None,
         "conversation_tail": [
             {
                 "sender": str(msg.get("sender", "")),
@@ -1566,6 +1568,34 @@ def _handle_auto_reply(
 
     console.print(f"[dim]    回复内容: {reply[:80]}...[/dim]")
 
+    # Generate tailored resume for any HR reply unless disabled or already exists.
+    auto_gen_resume = config.get("monitor", {}).get("auto_generate_resume_for_reply", True)
+    resume_path: str | None = None
+    if auto_gen_resume:
+        db = get_db()
+        already_has_resume = _has_generated_resume_for_job(db, job["id"])
+        db.close()
+        if already_has_resume:
+            console.print("[dim]    该岗位已有定制简历，跳过重复生成[/dim]")
+            db = get_db()
+            row = db.execute(
+                "SELECT resume_path FROM jobs WHERE id = ? AND deleted_at IS NULL", (job["id"],)
+            ).fetchone()
+            resume_path = _row_text(row, "resume_path") if row else None
+            db.close()
+        else:
+            from jobagent.ai.resume import generate_tailored_resume
+
+            console.print("[cyan]    为本次回复生成定制简历...[/cyan]")
+            try:
+                generated = generate_tailored_resume(job["id"], config)
+                resume_path = str(generated) if generated else None
+            except OperationCancelled:
+                close_tab(target_id)
+                return "stopped"
+            except Exception as exc:
+                console.print(f"[yellow]    定制简历生成失败（不影响回复建议）: {exc}[/yellow]")
+
     if not config.get("monitor", {}).get("auto_reply_hr_questions", False):
         if stop_requested(config):
             close_tab(target_id)
@@ -1576,7 +1606,7 @@ def _handle_auto_reply(
             db,
             job["id"],
             "reply_pending",
-            _build_reply_detail(messages, reply, conversation=conversation),
+            _build_reply_detail(messages, reply, conversation=conversation, resume_path=resume_path),
         )
         db.close()
         close_tab(target_id)
@@ -1593,7 +1623,7 @@ def _handle_auto_reply(
             db,
             job["id"],
             "auto_replied",
-            _build_reply_detail(messages, reply, "auto_replied.v1", conversation=conversation),
+            _build_reply_detail(messages, reply, "auto_replied.v1", conversation=conversation, resume_path=resume_path),
         )
         db.close()
         close_tab(target_id)

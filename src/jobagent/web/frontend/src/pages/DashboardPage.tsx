@@ -1711,6 +1711,19 @@ function MonitorExecutionView({
                     {canReply ? (
                       <div>
                         <div className="mb-1 text-xs font-black text-primary">AI 建议回复（尚未回答）</div>
+                        {parsed.resumePath && (
+                          <div className="mb-2 flex flex-wrap items-center gap-2 rounded-2xl bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                            <span>已生成定制简历，可下载后作为附件发送给 HR</span>
+                            <a
+                              href={`/api/jobs/${item.job_id}/resume`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-bold underline"
+                            >
+                              下载简历
+                            </a>
+                          </div>
+                        )}
                         <textarea
                           value={draftFor(item)}
                           onChange={event => setReplyDrafts(prev => ({ ...prev, [item.id]: event.target.value }))}

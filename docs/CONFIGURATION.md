@@ -13,7 +13,7 @@
 | `scoring` | `threshold`, `max_candidates` | 评分阈值与候选数量 |
 | `throttle` | `daily_limit`, `interval_min/max`, `send_windows` | 低频发送策略 |
 | `ai` | `service`, `provider`, `model`, `api_key`, `base_url` | AI 服务与接口 |
-| `monitor` | `interval`, `max_resume_sends_per_cycle`, `agent_decisions` | 回复监听设置 |
+| `monitor` | `interval`, `max_resume_sends_per_cycle`, `agent_decisions`, `auto_generate_resume_for_reply` | 回复监听设置 |
 | `follow_up` | `enabled`, `interval_hours`, `skip_weekends` | 跟进策略 |
 | `browser` | `chrome_ports`, `proxy_port` | Chrome 与本地代理连接 |
 
@@ -29,6 +29,14 @@
 - `min_confidence`（默认 0.6）以下的低置信度决策、无法解析的输出，以及所有幂等/安全检查（已回复跳过、重复消息去重、规则检测到拒绝的强制兜底）仍由代码保证。
 
 关闭该开关（默认）时，行为与旧版规则判断完全一致。
+
+## 自动简历生成
+
+`monitor.auto_generate_resume_for_reply: true`（默认开启）时，只要 monitor 处理 HR 的新消息（无论 LLM 决策为 `auto_reply` 还是 `needs_resume`），都会自动为该岗位生成一份定制简历 PDF（或 Markdown，当 PDF 渲染库未安装时），并写入 `jobs.resume_path`。
+
+- 生成成功后，网页「监测执行」的待确认回复卡片会显示简历路径，方便人工发送附件；
+- 若该岗位已有生成过的简历，会自动跳过重复生成；
+- 生成失败不会影响文字回复建议的生成与展示。
 
 ## 平台配置边界
 
