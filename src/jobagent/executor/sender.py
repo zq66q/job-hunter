@@ -28,6 +28,22 @@ from jobagent.platform_safety import PlatformAccessGuard, PlatformSafetyStop
 
 console = Console()
 
+
+def _evaluate_with_retry(target_id: str, expression: str, attempts: int = 2, delay: float = 0.5, **kwargs):
+    """Evaluate JS with a short retry when Chrome DevTools returns nothing.
+
+    CDP occasionally drops responses under load; a single retry avoids
+    transient "no_response" failures without masking real page errors.
+    """
+    last_result = None
+    for attempt in range(max(1, attempts)):
+        last_result = evaluate(target_id, expression, **kwargs)
+        if last_result:
+            return last_result
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    return last_result
+
 CHAT_BUTTON_SELECTOR = (
     'a[redirect-url*="/web/geek/chat"], '
     'a[data-url*="/friend/add"], '
@@ -201,7 +217,7 @@ def _detect_greet_popup(target_id: str) -> dict:
         return JSON.stringify({success: true, popup: false, kind: null});
     })()
     """
-    return _parse_js_result(evaluate(target_id, detect_popup_js))
+    return _parse_js_result(_evaluate_with_retry(target_id, detect_popup_js))
 
 
 def _is_preset_greeting_popup(state: dict) -> bool:
@@ -213,7 +229,7 @@ def _is_preset_greeting_popup(state: dict) -> bool:
 
 
 def _confirm_preset_greeting(target_id: str) -> dict:
-    result = _parse_js_result(evaluate(target_id, """
+    result = _parse_js_result(_evaluate_with_retry(target_id, """
     (() => {
         const visible = (element) => {
             if (!element) return false;
@@ -257,7 +273,7 @@ def _confirm_preset_greeting(target_id: str) -> dict:
 
 def _submit_startchat_greeting(target_id: str, greeting: str) -> dict:
     greeting_escaped = json.dumps(greeting, ensure_ascii=False)
-    input_state = _parse_js_result(evaluate(target_id, """
+    input_state = _parse_js_result(_evaluate_with_retry(target_id, """
     (() => {
         const visible = (element) => {
             if (!element) return false;
@@ -293,7 +309,7 @@ def _submit_startchat_greeting(target_id: str, greeting: str) -> dict:
     if not type_text(target_id, greeting, human=True):
         return {"success": False, "error": "startchat_trusted_input_failed", "skip_backoff": True}
 
-    submit_state = _parse_js_result(evaluate(target_id, f"""
+    submit_state = _parse_js_result(_evaluate_with_retry(target_id, f"""
     (() => {{
         const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
         const visible = (element) => {{
@@ -444,7 +460,7 @@ def _click_chat_button(target_id: str, stop_event, attempts: int = 30) -> dict:
     for attempt in range(max(1, attempts)):
         if _stop_requested(stop_event):
             return {"success": False, "error": "stopped", "history_detail": "用户已请求停止", "skip_backoff": True}
-        last_result = _parse_js_result(evaluate(target_id, click_chat_js))
+        last_result = _parse_js_result(_evaluate_with_retry(target_id, click_chat_js))
         if last_result.get("success"):
             return last_result
         if attempt < attempts - 1 and _sleep_or_stop(1, stop_event):
@@ -463,7 +479,7 @@ def _adopt_chat_target(current_target_id: str, chat_ready: dict) -> str:
 
 def _message_delivery_state(target_id: str, greeting: str) -> str:
     greeting_escaped = json.dumps(greeting, ensure_ascii=False)
-    result = _parse_js_result(evaluate(target_id, f"""
+    result = _parse_js_result(_evaluate_with_retry(target_id, f"""
     (() => {{
         const normalize = (value) => String(value || '')
             .replace(/[\\u200b-\\u200f\\ufeff]/g, '')
@@ -575,7 +591,7 @@ def _verify_greeting_in_chat_list(
         for attempt in range(max(1, attempts)):
             if _stop_requested(stop_event):
                 return False
-            result = _parse_js_result(evaluate(target_id, expression, timeout=5))
+            result = _parse_js_result(_evaluate_with_retry(target_id, expression, timeout=5))
             if result.get("success") and result.get("matched"):
                 return True
             if attempt + 1 < attempts and _sleep_or_stop(1, stop_event):
@@ -588,7 +604,7 @@ def _verify_greeting_in_chat_list(
 def _submit_chat_message_background(target_id: str, greeting: str) -> dict:
     """Use JobAgent's original Vue submit path without foregrounding Chrome."""
     greeting_escaped = json.dumps(greeting, ensure_ascii=False)
-    result = _parse_js_result(evaluate(target_id, f"""
+    result = _parse_js_result(_evaluate_with_retry(target_id, f"""
     (() => {{
         const input = document.querySelector('#chat-input');
         if (!input) return JSON.stringify({{success: false, error: 'no_chat_input'}});
@@ -624,7 +640,7 @@ def _submit_chat_message_background(target_id: str, greeting: str) -> dict:
 
 def _fill_chat_input(target_id: str, greeting: str) -> dict:
     greeting_escaped = json.dumps(greeting, ensure_ascii=False)
-    input_state = _parse_js_result(evaluate(target_id, """
+    input_state = _parse_js_result(_evaluate_with_retry(target_id, """
     (() => {
         const input = document.querySelector('#chat-input');
         if (!input) return JSON.stringify({success: false, error: 'no_chat_input'});
@@ -640,7 +656,7 @@ def _fill_chat_input(target_id: str, greeting: str) -> dict:
     if not type_text(target_id, greeting, human=True):
         return {"success": False, "error": "trusted_input_failed"}
 
-    result = _parse_js_result(evaluate(target_id, f"""
+    result = _parse_js_result(_evaluate_with_retry(target_id, f"""
     (() => {{
         const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
         const input = document.querySelector('#chat-input');
@@ -762,7 +778,7 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
         return JSON.stringify({success: true});
     })()
     """
-    page_check = _parse_js_result(evaluate(target_id, page_check_js))
+    page_check = _parse_js_result(_evaluate_with_retry(target_id, page_check_js))
     if not page_check.get("success"):
         close_tab(target_id)
         return page_check, None
