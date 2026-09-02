@@ -28,7 +28,17 @@
 - 每次决策（动作、理由、置信度）都会写入历史记录，供后续决策参考；
 - `min_confidence`（默认 0.6）以下的低置信度决策、无法解析的输出，以及所有幂等/安全检查（已回复跳过、重复消息去重、规则检测到拒绝的强制兜底）仍由代码保证。
 
-关闭该开关（默认）时，行为与旧版规则判断完全一致。
+### Function Calling（Tier-2 工具层）
+
+`monitor.agent_decisions.function_calling`（默认 `false`）开启后，LLM 不再只返回动作名，而是**直接调用已注册的工具**并传入参数：
+
+- `auto_reply` 可附带 `tone`（自然 / 正式 / 简短），控制生成回复的语气；
+- `needs_resume` 可附带 `send_online_resume`（true / false），决定是否在生成 PDF 后自动发送在线简历链接；
+- `mark_rejected`、`skip` 仍只需要 `reason` 和 `confidence`。
+
+当前仅支持 OpenAI-compatible 服务商（DeepSeek、豆包、custom）。使用 Anthropic 时即使开启也会自动回退到 JSON 决策路径，不影响原有行为。
+
+关闭 `function_calling`（默认）时，行为与旧版 JSON 决策路径完全一致。
 
 ## 自动简历生成
 

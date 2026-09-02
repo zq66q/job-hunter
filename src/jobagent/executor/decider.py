@@ -25,9 +25,14 @@ from dataclasses import dataclass
 
 from rich.console import Console
 
-from jobagent.ai.credentials import call_anthropic_text
+from jobagent.ai.credentials import (
+    call_anthropic_text,
+    call_openai_compatible_tool_call,
+    get_ai_service,
+)
 from jobagent.cancellation import OperationCancelled, run_cancellable
 from jobagent.db import get_db
+from jobagent.executor.tools import DECISION_META_REQUIRED, build_conversation_registry
 
 console = Console()
 
@@ -46,6 +51,9 @@ class DecisionResult:
     action: str
     reason: str
     confidence: float
+    # Tool-call arguments (Tier-2): optional parameters chosen by the LLM
+    # alongside the action, e.g. {"tone": "正式"} for auto_reply.
+    params: dict | None = None
 
 
 def _agent_decisions_config(config: dict) -> dict:
@@ -67,6 +75,19 @@ def get_min_confidence(config: dict) -> float:
         return DEFAULT_MIN_CONFIDENCE
 
 
+def function_calling_enabled(config: dict) -> bool:
+    """Whether to ask the LLM to pick tools via OpenAI function calling.
+
+    Only OpenAI-compatible providers (deepseek / doubao / custom) support this
+    in the current implementation. Anthropic falls back to the JSON decision
+    path even when this flag is true.
+    """
+    if not agent_decisions_enabled(config):
+        return False
+    flag = _agent_decisions_config(config).get("function_calling", False)
+    return bool(flag) and get_ai_service(config) in {"deepseek", "doubao", "custom"}
+
+
 def _call_llm(prompt: str, config: dict, max_tokens: int = 600) -> str | None:
     """Call the configured AI service; return None on any recoverable failure."""
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
@@ -86,6 +107,89 @@ def _call_llm(prompt: str, config: dict, max_tokens: int = 600) -> str | None:
     except Exception as exc:
         console.print(f"[red]决策调用失败: {exc}[/red]")
         return None
+
+
+def _build_decision_prompt(job: dict, messages: list[dict]) -> str:
+    """Prompt shared by JSON and function-calling decision paths."""
+    return f"""你是一个求职 Agent 的决策中枢。请根据岗位信息、对话记录、交互历史，决定下一步动作。
+
+## 岗位信息
+- 职位：{job.get('title', '')}
+- 公司：{job.get('company', '')}
+- 薪资：{job.get('salary', '')}
+- 当前状态：{job.get('status', '')}
+
+## 最近对话记录（HR 有新回复，等待处理）
+{_format_messages_for_prompt(messages)}
+
+## 交互历史（最近的动作记录）
+{_get_job_history_summary(job.get('id', ''))}
+
+## 判断原则
+- 以对话内容为准，历史记录仅作参考
+- 不确定时选择 skip，宁可少做不要做错
+- 谨慎判断拒绝：只有明确拒绝才选 mark_rejected
+- 选择工具时给出置信度和简短理由"""
+
+
+def _decide_with_tools(
+    job: dict,
+    messages: list[dict],
+    config: dict,
+) -> DecisionResult | None:
+    """Use OpenAI function calling to pick a tool and its parameters.
+
+    Returns None when the model makes no tool call or the call fails validation;
+    callers fall back to the legacy JSON decision path.
+    """
+    tools = build_conversation_registry().schemas()
+    if not tools:
+        return None
+
+    prompt = _build_decision_prompt(job, messages)
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    try:
+        call = run_cancellable(
+            lambda: call_openai_compatible_tool_call(
+                prompt,
+                config,
+                tools,
+                max_tokens=600,
+                timeout=ai_cfg.get("timeout_seconds", 180),
+                purpose="agent_decision",
+            ),
+            config,
+        )
+    except OperationCancelled:
+        raise
+    except Exception as exc:
+        console.print(f"[red]工具调用决策失败: {exc}[/red]")
+        return None
+
+    if not isinstance(call, dict):
+        return None
+
+    action = str(call.get("name") or "").strip()
+    if action not in CONVERSATION_ACTIONS:
+        return None
+
+    args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+    try:
+        confidence = float(args.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        return None
+    min_confidence = get_min_confidence(config)
+    if confidence < min_confidence:
+        return None
+
+    reason = str(args.get("reason", "")).strip()
+    if len(reason) > 200:
+        reason = reason[:200] + "…"
+
+    # Everything except the standard decision metadata is passed as tool params
+    # to the executor (e.g. tone for auto_reply, send_online_resume for needs_resume).
+    params = {k: v for k, v in args.items() if k not in DECISION_META_REQUIRED}
+    return DecisionResult(action=action, reason=reason, confidence=confidence, params=params)
 
 
 def _parse_decision_response(
@@ -171,25 +275,21 @@ def decide_conversation_action(
 ) -> DecisionResult | None:
     """Ask the LLM what to do with an HR conversation that has a new reply.
 
+    Tier-2 tool layer: when ``monitor.agent_decisions.function_calling`` is
+    enabled and the provider is OpenAI-compatible, the LLM picks a registered
+    tool (and its parameters, e.g. reply tone) through function calling.
+    Otherwise the original JSON decision path is used.
+
     Returns None when disabled, unavailable, or the response fails validation;
     callers must then fall back to the legacy rule-based cascade.
     """
     if not agent_decisions_enabled(config):
         return None
 
-    prompt = f"""你是一个求职 Agent 的决策中枢。请根据岗位信息、对话记录、交互历史，决定下一步动作。
+    if function_calling_enabled(config):
+        return _decide_with_tools(job, messages, config)
 
-## 岗位信息
-- 职位：{job.get('title', '')}
-- 公司：{job.get('company', '')}
-- 薪资：{job.get('salary', '')}
-- 当前状态：{job.get('status', '')}
-
-## 最近对话记录（HR 有新回复，等待处理）
-{_format_messages_for_prompt(messages)}
-
-## 交互历史（最近的动作记录）
-{_get_job_history_summary(job.get('id', ''))}
+    prompt = _build_decision_prompt(job, messages) + """
 
 ## 可选动作（只能选一个）
 1. auto_reply — HR 正常沟通（提问/索要信息/约时间等），应当回复消息
@@ -197,14 +297,9 @@ def decide_conversation_action(
 3. mark_rejected — HR 明确拒绝（不合适/已招到/岗位关闭），应当标记拒绝并停止跟踪
 4. skip — 消息无需处理（系统通知/广告卡片/无法判断语义），本轮跳过
 
-## 判断原则
-- 以对话内容为准，历史记录仅作参考
-- 不确定时选择 skip，宁可少做不要做错
-- 谨慎判断拒绝：只有明确拒绝才选 mark_rejected
-
 ## 输出要求
 只输出一个 JSON 对象，不要加任何其他文字：
-{{"action": "auto_reply|needs_resume|mark_rejected|skip", "reason": "简短理由（50字内）", "confidence": 0.0到1.0的数字}}"""
+{"action": "auto_reply|needs_resume|mark_rejected|skip", "reason": "简短理由（50字内）", "confidence": 0.0到1.0的数字}"""
 
     response = _call_llm(prompt, config)
     return _parse_decision_response(response, CONVERSATION_ACTIONS, get_min_confidence(config))

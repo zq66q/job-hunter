@@ -173,6 +173,7 @@ DEFAULTS: dict[str, Any] = {
         "agent_decisions": {
             "enabled": False,
             "min_confidence": 0.6,
+            "function_calling": False,
         },
     },
     "follow_up": {

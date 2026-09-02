@@ -1,6 +1,7 @@
 """Credential helpers for AI providers."""
 
 import hashlib
+import json
 import os
 import re
 
@@ -597,6 +598,80 @@ def call_openai_compatible_text(
     # 同 call_anthropic_text：OpenAI 兼容路径此前在这里静默 return None，
     # 截断后空 choices、thinking-only 响应全部无声失败（issue #102）。
     raise AIRequestError("empty_response", "AI 服务没有返回文本内容，可能只返回了思考过程")
+
+
+def call_openai_compatible_tool_call(
+    prompt: str,
+    config: dict,
+    tools: list[dict],
+    max_tokens: int,
+    *,
+    timeout: float | None = None,
+    purpose: str | None = None,
+) -> dict | None:
+    """Call an OpenAI-compatible endpoint with function tools; return the first tool call.
+
+    ``tools`` is the OpenAI ``tools=[{"type": "function", ...}]`` list. Returns
+    ``{"name": str, "arguments": dict}`` for the first tool call, or None when
+    the model answered without calling any tool. Raises AIRequestError on
+    transport/provider failures (callers decide whether to fall back).
+    """
+    ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
+    api_key = get_ai_api_key(config)
+    base_url = get_ai_base_url(config)
+    model = get_openai_compatible_model(config)
+    if not api_key or not base_url or not tools:
+        return None
+
+    request_timeout = _coerce_timeout(timeout if timeout is not None else ai_cfg.get("timeout_seconds", 60))
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+        "tools": tools,
+        "tool_choice": "auto",
+    }
+    response = None
+    try:
+        response = httpx.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=request_timeout,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        raise normalize_ai_error(exc, response) from exc
+
+    payload_data = response.json()
+    choices = payload_data.get("choices", []) if isinstance(payload_data, dict) else []
+    if not choices:
+        return None
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message", {}) if isinstance(choice.get("message"), dict) else {}
+    tool_calls = message.get("tool_calls") or []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function") or {}
+        if not isinstance(fn, dict):
+            continue
+        name = str(fn.get("name") or "").strip()
+        if not name:
+            continue
+        raw_args = fn.get("arguments")
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args)
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+        elif isinstance(raw_args, dict):
+            args = raw_args
+        else:
+            args = {}
+        return {"name": name, "arguments": args if isinstance(args, dict) else {}}
+    return None
 
 
 def get_openai_compatible_model(config: dict) -> str:

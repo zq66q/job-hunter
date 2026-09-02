@@ -24,6 +24,7 @@ from jobagent.executor.decider import (
     decide_follow_up,
     record_decision,
 )
+from jobagent.executor.tools import dispatch_conversation_tool
 from jobagent.throttle import RequestThrottle, SendWindowChecker
 from jobagent.platform_safety import (
     PlatformAccessGuard,
@@ -762,7 +763,7 @@ def _check_if_portfolio_sent(messages: list[dict], portfolio_url: str = "") -> b
     return False
 
 
-def _generate_auto_reply(messages: list[dict], job: dict, config: dict) -> str | None:
+def _generate_auto_reply(messages: list[dict], job: dict, config: dict, tone: str = "自然") -> str | None:
     """Generate a natural reply based on conversation context."""
     # Build conversation context
     conv_text = "\n".join([f"{'我' if m['sender'] == 'me' else 'HR'}: {m['text']}" for m in messages[-10:]])
@@ -771,6 +772,16 @@ def _generate_auto_reply(messages: list[dict], job: dict, config: dict) -> str |
     from pathlib import Path
     resume_path = Path(config.get("profile", {}).get("resume_path", "./resume.md"))
     resume_summary = resume_path.read_text(encoding="utf-8")[:800] if resume_path.exists() else "（未配置简历）"
+
+    tone = (tone or "自然").strip() or "自然"
+    if tone == "自然":
+        tone_hint = "像真人在手机上打字，自然口语化，不要太正式"
+    elif tone == "正式":
+        tone_hint = "礼貌书面语气，措辞得体但保持真诚"
+    elif tone == "简短":
+        tone_hint = "尽量精炼，直接回答要点，一两句话说完"
+    else:
+        tone_hint = f"语气风格：{tone}"
 
     prompt = f"""你是一位求职者，正在BOSS直聘上和HR沟通。请根据对话上下文生成一条自然、礼貌的回复。
 
@@ -786,7 +797,7 @@ def _generate_auto_reply(messages: list[dict], job: dict, config: dict) -> str |
 
 ## 要求
 1. 根据HR最后一条消息的意图来回复，自然对话
-2. 语气像真人在手机上打字，不要太正式
+2. 语气要求：{tone_hint}
 3. 字数控制在30-100字
 4. 不要重复之前已经说过的内容
 5. 如果HR在约面试时间，积极配合
@@ -1387,7 +1398,7 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
     # - Legacy mode: hardcoded rule cascade.
     # Safety override: legacy rejection detection always wins, so the agent
     # never keeps messaging a conversation the rules consider rejected.
-    decision_action: str | None = None
+    decision: DecisionResult | None = None
     if agent_decisions_enabled(config):
         decision = decide_conversation_action(job, messages, config)
         if decision:
@@ -1399,10 +1410,9 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
                 f"（置信度{decision.confidence:.2f}）— {decision.reason}[/magenta]"
             )
             record_decision(job["id"], decision)
-            decision_action = decision.action
         else:
             console.print("[yellow]    Agent决策不可用，回退规则判断[/yellow]")
-    if decision_action is None:
+    if decision is None:
         if _detect_rejection(messages):
             decision_action = "mark_rejected"
         elif _detect_resume_request(messages):
@@ -1410,42 +1420,42 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
         else:
             decision_action = "auto_reply"
 
-    if decision_action == "mark_rejected":
+    # Tier-2 tool layer: execute the action through the tool registry. Tools
+    # wrap the same handlers the legacy if/elif cascade called, so behavior
+    # is identical; the registry is what the LLM's function calling targets.
+    if decision_action in {"mark_rejected", "skip", "needs_resume", "auto_reply"}:
         if stop_requested(config):
             close_tab(target_id)
             return "stopped"
-        console.print("[dim]    HR已拒绝，标记并停止跟踪[/dim]")
-        db = get_db()
-        update_job_status(db, job["id"], "rejected")
-        add_history(db, job["id"], "rejected", "HR回复拒绝")
-        db.close()
-        close_tab(target_id)
-        return "rejected"
+        result = dispatch_conversation_tool(
+            decision_action,
+            job=job,
+            config=config,
+            target_id=target_id,
+            messages=messages,
+            conversation=conversation,
+            params=(decision.params if decision is not None else None),
+        )
+        if result is not None:
+            return result
 
-    if decision_action == "skip":
-        console.print("[dim]    Agent决定本轮跳过[/dim]")
-        close_tab(target_id)
-        return "skipped_agent_decision"
-
-    if decision_action == "needs_resume":
-        return _handle_resume_request(job, target_id, messages, config)
-
-    # auto_reply path: respect previously dismissed reply suggestions.
-    db = get_db()
-    dismissed_pending_reply = _has_dismissed_pending_reply(db, job["id"], messages)
-    db.close()
-    if dismissed_pending_reply:
-        console.print("[dim]    该回复建议已放弃，跳过本轮[/dim]")
-        close_tab(target_id)
-        return "skipped_dismissed_reply"
-
-    return _handle_auto_reply(job, target_id, messages, conversation, config)
+    # Defensive fallback: unknown action → skip this round, never guess.
+    close_tab(target_id)
+    return "skipped_agent_decision"
 
 
-def _handle_resume_request(job: dict, target_id: str, messages: list[dict], config: dict) -> str:
+def _handle_resume_request(
+    job: dict,
+    target_id: str,
+    messages: list[dict],
+    config: dict,
+    send_online_resume: bool = True,
+) -> str:
     """Generate a tailored resume (and send portfolio link when appropriate).
 
     Extracted from _handle_conversation; returns the same action strings.
+    send_online_resume: tool-layer parameter - set False to skip the online
+    resume link (e.g. the agent judged the HR only wants the attachment).
     """
     resume_request_from_card = _has_resume_request_card(messages)
     console.print("[cyan]    HR要求简历，生成定制化简历...[/cyan]")
@@ -1484,7 +1494,8 @@ def _handle_resume_request(job: dict, target_id: str, messages: list[dict], conf
 
     # Auto-send portfolio link for normal text resume requests only.
     # Card-triggered requests are recognition-only: generate and mark needs_resume.
-    if not resume_request_from_card:
+    # The tool layer can disable the link send via send_online_resume=False.
+    if not resume_request_from_card and send_online_resume:
         portfolio_url = config.get("profile", {}).get("portfolio_url", "")
         if not _check_if_portfolio_sent(messages, portfolio_url):
             if _wait_or_stop(config, 2):
@@ -1547,14 +1558,16 @@ def _handle_auto_reply(
     messages: list[dict],
     conversation: dict | None,
     config: dict,
+    tone: str = "自然",
 ) -> str:
     """Generate and (when enabled) send a natural reply.
 
     Extracted from _handle_conversation; returns the same action strings.
+    tone: tool-layer parameter controlling the reply style (自然/正式/简短).
     """
     console.print("[cyan]    生成自动回复...[/cyan]")
     try:
-        reply = _generate_auto_reply(messages, job, config)
+        reply = _generate_auto_reply(messages, job, config, tone=tone)
     except OperationCancelled:
         close_tab(target_id)
         return "stopped"

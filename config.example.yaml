@@ -128,6 +128,10 @@ monitor:
     enabled: false
     # 决策置信度低于该值时回退规则判断
     min_confidence: 0.6
+    # 是否启用 OpenAI function calling 让 LLM 直接选择工具并传参
+    # 当前仅支持 OpenAI-compatible 服务商（deepseek / doubao / custom）
+    # Anthropic 即使设为 true 也会自动回退 JSON 决策路径
+    function_calling: false
 
 follow_up:
   enabled: false
