@@ -270,9 +270,13 @@ def _sanitize_config_for_write(data):
 def _preflight_messages(mode: str, config: dict, options: dict | None = None) -> list[str]:
 	"""Return user-actionable blockers before starting a dashboard task."""
 	messages: list[str] = []
-	if mode not in {"full", "collect", "rescore", "monitor"}:
+	# ``monitor_once`` shares every rule with ``monitor``; collapse it before
+	# the whitelist check so the new dashboard card doesn't trip the
+	# "unsupported mode" guard.
+	effective_mode = "monitor" if mode == "monitor_once" else mode
+	if effective_mode not in {"full", "collect", "rescore", "monitor"}:
 		messages.append(f"不支持的任务模式：{mode}")
-	if mode == "collect":
+	if effective_mode == "collect":
 		try:
 			collection_options = normalize_collection_options(config, options)
 		except ValueError as exc:
@@ -288,10 +292,10 @@ def _preflight_messages(mode: str, config: dict, options: dict | None = None) ->
 
 	profile = config.get("profile", {})
 	resume_path = profile.get("resume_path", "")
-	if mode in {"full", "rescore"} and (not resume_path or not Path(str(resume_path)).exists()):
+	if effective_mode in {"full", "rescore"} and (not resume_path or not Path(str(resume_path)).exists()):
 		messages.append("请先在配置页上传 .md、.docx 或 .pdf 简历。")
 
-	if mode == "full":
+	if effective_mode == "full":
 		try:
 			full_options = normalize_collection_options(config, options)
 		except ValueError as exc:
@@ -300,7 +304,7 @@ def _preflight_messages(mode: str, config: dict, options: dict | None = None) ->
 			if not full_options.get("platform_order"):
 				messages.append("运行全流程至少需要选择一个采集平台。")
 
-	if mode in {"full", "rescore"} and not get_ai_api_key(config):
+	if effective_mode in {"full", "rescore"} and not get_ai_api_key(config):
 		messages.append("请先在配置页填写当前 AI 服务的 API Key，或设置对应的标准环境变量。")
 
 	return messages
