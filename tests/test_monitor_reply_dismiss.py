@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from jobagent.db import add_history, get_db, get_jobs_needing_resume, insert_job, update_job_status
+from jobagent.executor.decider import DecisionResult
 
 
 def _job(job_id: str) -> dict:
@@ -385,6 +386,58 @@ class MonitorReplyDismissTests(unittest.TestCase):
         self.assertEqual(payload["hr_question"], "请发一份简历。")
         self.assertEqual(payload["system_reason"], "占位符校验失败：模型新增了 [待填写姓名]")
         self.assertEqual(payload["ai_reply"], "")
+
+    def test_agent_decision_action_is_dispatched_without_unbound_local_error(self):
+        """Regression: when agent_decisions is enabled and returns a decision,
+        ``decision_action`` must be assigned from ``decision.action`` before the
+        tool dispatch block. Previously this raised UnboundLocalError.
+        """
+        from jobagent.executor import monitor
+
+        messages = [
+            {"sender": "me", "text": "您好，我对岗位很感兴趣。"},
+            {"sender": "hr", "text": "方便介绍一下你的经历吗？"},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "data" / "jobagent.db"
+            db = get_db(db_path)
+            try:
+                insert_job(db, _job("job-agent-decision"))
+                update_job_status(db, "job-agent-decision", "replied")
+            finally:
+                db.close()
+
+            def open_db():
+                return get_db(db_path)
+
+            decision = DecisionResult("auto_reply", "Agent chose auto reply", 0.85, params={"tone": "自然"})
+
+            with patch.object(monitor, "get_db", side_effect=open_db), \
+                 patch.object(monitor, "_open_conversation", return_value="target-1"), \
+                 patch.object(monitor, "evaluate", return_value=json.dumps(messages, ensure_ascii=False)), \
+                 patch.object(monitor, "close_tab"), \
+                 patch.object(monitor, "_generate_auto_reply", return_value="当然可以。"), \
+                 patch.object(monitor, "agent_decisions_enabled", return_value=True), \
+                 patch.object(
+                     monitor,
+                     "decide_conversation_action",
+                     return_value=decision,
+                 ) as decide, \
+                 patch.object(
+                     monitor,
+                     "dispatch_conversation_tool",
+                     return_value="reply_pending",
+                 ) as dispatch:
+                action = monitor._handle_conversation(
+                    _job("job-agent-decision") | {"status": "replied"},
+                    {"monitor": {"agent_decisions": {"enabled": True}}},
+                )
+
+        decide.assert_called_once()
+        dispatch.assert_called_once()
+        self.assertEqual(dispatch.call_args.kwargs["params"], {"tone": "自然"})
+        self.assertEqual(action, "reply_pending")
 
 
 if __name__ == "__main__":

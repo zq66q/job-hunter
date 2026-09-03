@@ -1419,6 +1419,8 @@ def _handle_conversation(job: dict, config: dict, conversation: dict | None = No
             decision_action = "needs_resume"
         else:
             decision_action = "auto_reply"
+    else:
+        decision_action = decision.action
 
     # Tier-2 tool layer: execute the action through the tool registry. Tools
     # wrap the same handlers the legacy if/elif cascade called, so behavior
