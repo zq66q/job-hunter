@@ -587,6 +587,7 @@ def _execute_monitor_once(task: WorkbenchTask, config: dict) -> None:
 	monitor_config["_workbench_stop_event"] = task.stop_requested
 	monitor_config["_monitor_reuse_chat_tab"] = True
 	monitor_config["_monitor_runtime_state"] = {}
+	monitor_config["_monitor_once_mode"] = True
 
 	_log(task, "执行单次监测")
 	try:

@@ -59,6 +59,71 @@ class MonitorThrottleTests(unittest.TestCase):
 
         request_throttle.assert_called_once_with(90, 270)
 
+    def test_once_mode_uses_shorter_throttle_and_skips_follow_ups(self):
+        from jobagent.executor import monitor
+
+        config = {
+            "collection": {"collection_delay_multiplier": 1.0},
+            "throttle": {
+                "interval_min": 60,
+                "interval_max": 180,
+                "once_interval_min": 20,
+                "once_interval_max": 45,
+                "send_windows": [],
+            },
+            "_monitor_once_mode": True,
+        }
+
+        with patch.object(monitor, "RequestThrottle") as request_throttle, \
+             patch.object(monitor, "check_replies", return_value=[]), \
+             patch.object(monitor, "_check_follow_ups", return_value=0) as follow_ups:
+            monitor.monitor_and_send_resumes(config)
+
+        request_throttle.assert_called_once_with(20, 45)
+        follow_ups.assert_not_called()
+
+    def test_once_mode_falls_back_to_default_once_intervals(self):
+        from jobagent.executor import monitor
+
+        config = {
+            "collection": {"collection_delay_multiplier": 1.0},
+            "throttle": {
+                "interval_min": 60,
+                "interval_max": 180,
+                "send_windows": [],
+            },
+            "_monitor_once_mode": True,
+        }
+
+        with patch.object(monitor, "RequestThrottle") as request_throttle, \
+             patch.object(monitor, "check_replies", return_value=[]), \
+             patch.object(monitor, "_check_follow_ups", return_value=0):
+            monitor.monitor_and_send_resumes(config)
+
+        request_throttle.assert_called_once_with(20, 45)
+
+    def test_persistent_monitor_still_uses_full_throttle_and_follow_ups(self):
+        from jobagent.executor import monitor
+
+        config = {
+            "collection": {"collection_delay_multiplier": 1.0},
+            "throttle": {
+                "interval_min": 60,
+                "interval_max": 180,
+                "once_interval_min": 20,
+                "once_interval_max": 45,
+                "send_windows": [],
+            },
+        }
+
+        with patch.object(monitor, "RequestThrottle") as request_throttle, \
+             patch.object(monitor, "check_replies", return_value=[]), \
+             patch.object(monitor, "_check_follow_ups", return_value=0) as follow_ups:
+            monitor.monitor_and_send_resumes(config)
+
+        request_throttle.assert_called_once_with(60, 180)
+        follow_ups.assert_called_once()
+
     def test_boss_operation_multiplier_is_bounded_and_tolerates_invalid_values(self):
         from jobagent.executor import monitor
 

@@ -1956,10 +1956,20 @@ def monitor_and_send_resumes(config: dict) -> dict:
         return {"skipped": 0, "replied": 0, "needs_resume": 0, "rejected": 0, "failed": 0}
 
     operation_multiplier = get_boss_operation_interval_multiplier(config)
-    throttle = RequestThrottle(
-        _positive_interval_seconds(throttle_config.get("interval_min"), 60) * operation_multiplier,
-        _positive_interval_seconds(throttle_config.get("interval_max"), 180) * operation_multiplier,
-    )
+    # One-shot mode (dashboard "立即检测" / CLI --once) uses a dedicated,
+    # shorter throttle so a manual check finishes quickly instead of paying
+    # the full 60-180s anti-ban spacing between every conversation open.
+    once_mode = bool(config.get("_monitor_once_mode"))
+    if once_mode:
+        throttle = RequestThrottle(
+            _positive_interval_seconds(throttle_config.get("once_interval_min"), 20) * operation_multiplier,
+            _positive_interval_seconds(throttle_config.get("once_interval_max"), 45) * operation_multiplier,
+        )
+    else:
+        throttle = RequestThrottle(
+            _positive_interval_seconds(throttle_config.get("interval_min"), 60) * operation_multiplier,
+            _positive_interval_seconds(throttle_config.get("interval_max"), 180) * operation_multiplier,
+        )
     monitor_config = dict(config)
     monitor_config["_monitor_request_throttle"] = throttle
     monitor_config["_monitor_safety_guard"] = MonitorSafetyGuard(config)
@@ -2036,6 +2046,9 @@ def monitor_and_send_resumes(config: dict) -> dict:
     # Step 3: Follow up ONLY on jobs with absolutely no HR reply
     # Pass replied_job_ids so follow-up skips any job touched this cycle
     if (stop_event and stop_event.is_set()) or summary.get("stop_reason"):
+        return summary
+    if once_mode:
+        console.print("\n[dim]单次检测模式：跳过无回复岗位跟进（持续监测时才会跟进）[/dim]")
         return summary
     console.print("\n[bold cyan]═══ 第二步：跟进无回复岗位 ═══[/bold cyan]")
     try:

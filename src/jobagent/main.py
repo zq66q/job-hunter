@@ -266,7 +266,9 @@ def monitor(ctx: click.Context, once: bool, interval: int | None) -> None:
 
     if once:
         console.print("[bold cyan]═══ 单次监听模式 ═══[/bold cyan]\n")
-        summary = monitor_and_send_resumes(config)
+        once_config = dict(config)
+        once_config["_monitor_once_mode"] = True
+        summary = monitor_and_send_resumes(once_config)
         parts = [
             f"自动回复{summary.get('replied', 0)}条",
             f"跳过{summary.get('skipped', 0)}条",

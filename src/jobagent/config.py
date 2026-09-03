@@ -138,6 +138,8 @@ DEFAULTS: dict[str, Any] = {
         "daily_limit": 30,
         "interval_min": 60,
         "interval_max": 180,
+        "once_interval_min": 20,
+        "once_interval_max": 45,
         "browse_before_greet": True,
         "browse_duration_min": 15,
         "browse_duration_max": 30,
